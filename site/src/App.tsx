@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { motion, useScroll, useTransform } from 'framer-motion';
-import { Navbar } from '@/components/layout/Navbar';
+
 import { Hero } from '@/components/sections/Hero';
 import { Features } from '@/components/sections/Features';
 import { WorkflowShowcase } from '@/components/sections/WorkflowShowcase';
@@ -32,7 +32,7 @@ function App() {
         <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 brightness-100 contrast-150 mix-blend-overlay"></div>
       </div>
 
-      <Navbar />
+
       
       <main>
         <Hero />
