@@ -1,0 +1,25 @@
+# Miscellaneous
+*.class
+*.log
+*.lock
+*.webp
+.DS_Store
+
+# Dart/Flutter
+.dart_tool/
+.packages
+.pub/
+build/
+ios/Flutter/Generated.xcconfig
+ios/Flutter/flutter_export_environment.sh
+android/.gradle
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Environment
+.env
+
+# Editor
+.vscode/
+.idea/
+*.iml

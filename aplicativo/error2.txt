@@ -1,0 +1,5 @@
+src/App.tsx(6,18): error TS6133: 'ColorSliderGroup' is declared but its value is never read.
+src/components/ColorWheel.tsx(103,11): error TS6133: 'maxVal' is declared but its value is never read.
+src/components/ColorWheel.tsx(193,9): error TS6133: 'onMouseMove' is declared but its value is never read.
+src/components/ColorWheel.tsx(193,36): error TS6133: 'e' is declared but its value is never read.
+src/components/ColorWheel.tsx(202,9): error TS6133: 'onMouseUp' is declared but its value is never read.

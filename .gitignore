@@ -1,0 +1,12 @@
+node_modules
+dist
+build
+.env
+*.exe
+*.zip
+.DS_Store
+example_color_grade_app/node_modules
+site/node_modules
+aplicativo/node_modules
+aplicativo/dist
+aplicativo/build

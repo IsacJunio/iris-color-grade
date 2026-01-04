@@ -1,0 +1,2352 @@
+import { useState, useRef, useEffect, useCallback } from "react";
+import {
+  Upload,
+  Wand2,
+  Loader2,
+  RotateCcw,
+  Download,
+  MousePointer2,
+  Plus,
+  Trash2,
+  Eye,
+  EyeOff,
+  ChevronDown,
+  ChevronUp,
+  Settings,
+  Sliders,
+  Layers,
+} from "lucide-react";
+import { AIService } from "./ai/AIService";
+import { RGBCurves } from "./components/RGBCurves";
+import { Slider } from "./components/Slider";
+import { Histogram } from "./components/Histogram";
+import { SelectionTools } from "./components/SelectionTools";
+import { NodeGraph } from "./components/NodeGraph";
+import {
+  SettingsModal,
+  defaultShortcuts,
+  Shortcuts,
+} from "./components/SettingsModal";
+import { ColorWheel } from "./components/ColorWheel";
+import { CustomPresetsPanel } from "./components/CustomPresetsPanel";
+import { ProfessionalMaskPanel } from "./components/ProfessionalMaskPanel";
+import { MaskCanvasOverlay } from "./components/MaskCanvasOverlay";
+import {
+  Layer,
+  LayerType,
+  createDefaultLayer,
+  CurvePoint,
+  HSLColor,
+} from "./types/Layer";
+import {
+  MaskLayer,
+  Mask,
+} from "./types/Mask";
+import { processAllMaskLayers } from "./utils/MaskProcessor";
+
+// Conversão RGB para HSL
+function rgbToHsl(r: number, g: number, b: number): HSLColor {
+  r /= 255;
+  g /= 255;
+  b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  let h = 0,
+    s = 0;
+  const l = (max + min) / 2;
+
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r:
+        h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+        break;
+      case g:
+        h = ((b - r) / d + 2) / 6;
+        break;
+      case b:
+        h = ((r - g) / d + 4) / 6;
+        break;
+    }
+  }
+
+  return { h: h * 360, s: s * 100, l: l * 100 };
+}
+
+// Conversão HSL para RGB
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  h /= 360;
+  s /= 100;
+  l /= 100;
+  let r, g, b;
+
+  if (s === 0) {
+    r = g = b = l;
+  } else {
+    const hue2rgb = (p: number, q: number, t: number) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    r = hue2rgb(p, q, h + 1 / 3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1 / 3);
+  }
+
+  return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
+}
+
+function App() {
+  const [image, setImage] = useState<string | null>(null);
+  const [originalImageData, setOriginalImageData] = useState<ImageData | null>(
+    null
+  );
+  const [processedImageData, setProcessedImageData] =
+    useState<ImageData | null>(null);
+
+  // Camadas
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const hiddenCanvasRef = useRef<HTMLCanvasElement>(null);
+  const fullResImageDataRef = useRef<ImageData | null>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+
+  const maskCanvasRef = useRef<HTMLCanvasElement | OffscreenCanvas | null>(
+    null
+  ); // Offscreen canvas for mask
+
+  // State - Inicializar com uma camada de cor padrão para os controles ficarem sempre disponíveis
+  const INITIAL_LAYER_ID = "initial-color-layer";
+  const [layers, setLayers] = useState<Layer[]>(() => {
+    const initialLayer = createDefaultLayer("cor", 0);
+    initialLayer.id = INITIAL_LAYER_ID;
+    initialLayer.name = "Cor Principal";
+    return [initialLayer];
+  });
+  const [selectedLayerId, setSelectedLayerId] = useState<string | null>(INITIAL_LAYER_ID);
+  const [zoom, setZoom] = useState(1);
+  const [isSelectMode, setIsSelectMode] = useState(false);
+  const [showMask, setShowMask] = useState(false); // Toggle mask visibility overlay
+
+  // AI
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [aiExplanation, setAiExplanation] = useState<string | null>(null);
+
+  // UI State
+  const [showGraph, setShowGraph] = useState(true);
+
+  // === SISTEMA DE MÁSCARAS PROFISSIONAIS ===
+  const [maskLayers, setMaskLayers] = useState<MaskLayer[]>([]);
+  const [selectedMaskLayerId, setSelectedMaskLayerId] = useState<string | null>(null);
+  const [showMaskOverlay, setShowMaskOverlay] = useState(false);
+  const [showMaskPanel, setShowMaskPanel] = useState(false);
+
+  const selectedLayer = layers.find((l) => l.id === selectedLayerId);
+
+  // Carregar imagem com redimensionamento inteligente (Smart Preview)
+  const handleImageUpload = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (file) {
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const imgSrc = event.target?.result as string;
+          setImage(imgSrc);
+
+          const img = new Image();
+          img.onload = () => {
+            const canvas = hiddenCanvasRef.current;
+            if (canvas) {
+              // 1. Guardar resolução completa em memória (para exportação final)
+              // Usar um canvas temporário para extrair os dados full-res
+              const fullResCanvas = document.createElement("canvas");
+              fullResCanvas.width = img.width;
+              fullResCanvas.height = img.height;
+              const fullCtx = fullResCanvas.getContext("2d");
+              if (fullCtx) {
+                fullCtx.drawImage(img, 0, 0);
+                fullResImageDataRef.current = fullCtx.getImageData(
+                  0,
+                  0,
+                  img.width,
+                  img.height
+                );
+              }
+
+              // 2. Criar Preview de Alta Performance (Max 1280px)
+              // Isso garante FPS alto durante a edição (como DaVinci Resolve usa Proxy)
+              const MAX_PREVIEW_WIDTH = 1280;
+              let previewW = img.width;
+              let previewH = img.height;
+
+              if (previewW > MAX_PREVIEW_WIDTH) {
+                const ratio = MAX_PREVIEW_WIDTH / previewW;
+                previewW = MAX_PREVIEW_WIDTH;
+                previewH = Math.round(img.height * ratio);
+              }
+
+              canvas.width = previewW;
+              canvas.height = previewH;
+              const ctx = canvas.getContext("2d");
+              if (ctx) {
+                ctx.drawImage(img, 0, 0, previewW, previewH);
+                setOriginalImageData(
+                  ctx.getImageData(0, 0, previewW, previewH)
+                );
+                // Resetar dados processados ao carregar nova imagem
+                setProcessedImageData(null);
+              }
+            }
+          };
+          img.src = imgSrc;
+        };
+        reader.readAsDataURL(file);
+      }
+    },
+    []
+  );
+
+  // Mask painting state
+  const [isMaskDrawing, setIsMaskDrawing] = useState(false);
+  // maskCanvasRef removido (duplicata)
+  const lastMaskPosRef = useRef<{ x: number; y: number } | null>(null);
+
+  // Initialize mask canvas
+  useEffect(() => {
+    if (originalImageData && !maskCanvasRef.current) {
+      maskCanvasRef.current = new OffscreenCanvas(
+        originalImageData.width,
+        originalImageData.height
+      );
+    } else if (originalImageData && maskCanvasRef.current) {
+      if (
+        maskCanvasRef.current.width !== originalImageData.width ||
+        maskCanvasRef.current.height !== originalImageData.height
+      ) {
+        maskCanvasRef.current = new OffscreenCanvas(
+          originalImageData.width,
+          originalImageData.height
+        );
+      }
+    }
+  }, [originalImageData]);
+
+  // Load existing mask data into mask canvas
+  useEffect(() => {
+    if (!maskCanvasRef.current || !selectedLayer?.selection?.maskData) return;
+    const ctx = maskCanvasRef.current.getContext("2d");
+    if (!ctx) return;
+    const imgData = new ImageData(
+      Uint8ClampedArray.from(selectedLayer.selection.maskData),
+      maskCanvasRef.current.width,
+      maskCanvasRef.current.height
+    );
+    ctx.putImageData(imgData, 0, 0);
+  }, [selectedLayer?.id, selectedLayer?.selection?.maskData]);
+
+  const getMaskPos = useCallback((e: React.PointerEvent | React.MouseEvent) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+    };
+  }, []);
+
+  const handleMaskMouseDown = useCallback(
+    (e: React.PointerEvent) => {
+      if (!selectedLayer?.selection) return;
+      e.currentTarget.setPointerCapture(e.pointerId);
+
+      // 1. Color Picker Logic
+      if (selectedLayer.selection.maskMode === "color") {
+        const canvas = canvasRef.current;
+        if (!canvas || !originalImageData) return;
+
+        const pos = getMaskPos(e);
+        const x = Math.floor(pos.x);
+        const y = Math.floor(pos.y);
+
+        if (
+          x >= 0 &&
+          x < originalImageData.width &&
+          y >= 0 &&
+          y < originalImageData.height
+        ) {
+          const idx = (y * originalImageData.width + x) * 4;
+          const r = originalImageData.data[idx];
+          const g = originalImageData.data[idx + 1];
+          const b = originalImageData.data[idx + 2];
+
+          const hsl = rgbToHsl(r, g, b);
+          // Update layer selection color
+          setLayers((prev) =>
+            prev.map((l) =>
+              l.id === selectedLayerId && l.selection
+                ? { ...l, selection: { ...l.selection, selectedColor: hsl } }
+                : l
+            )
+          );
+        }
+        return;
+      }
+
+      // 2. Brush/Shape Logic
+      if (selectedLayer.selection.maskMode !== "brush") return;
+      if (!maskCanvasRef.current) return;
+
+      const pos = getMaskPos(e);
+      setIsMaskDrawing(true);
+      lastMaskPosRef.current = pos;
+
+      const ctx = maskCanvasRef.current.getContext("2d");
+      if (!ctx) return;
+
+      const tool = selectedLayer.selection.brushTool;
+      ctx.globalCompositeOperation =
+        tool === "eraser" ? "destination-out" : "source-over";
+
+      // Only verify color for display, mask data uses alpha mainly but we draw white/colored
+      ctx.fillStyle = "white";
+
+      if (tool === "brush" || tool === "eraser") {
+        ctx.beginPath();
+        // Only draw initial dot if it's a brush, not shape
+        ctx.arc(
+          pos.x,
+          pos.y,
+          selectedLayer.selection.brushSize / 2,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+      }
+    },
+    [selectedLayer, selectedLayerId, originalImageData, getMaskPos]
+  );
+
+  // Otimização: Ref para guardar a posição do mouse e requestAnimationFrame
+  const mousePosRef = useRef<{ x: number; y: number } | null>(null);
+  const rafRef = useRef<number | null>(null);
+
+  const drawOverlayLoop = useCallback(() => {
+    if (!mousePosRef.current || !overlayCanvasRef.current || !selectedLayer)
+      return;
+
+    const ctx = overlayCanvasRef.current.getContext("2d");
+    if (!ctx) return;
+
+    // Limpar tudo (ou otimizar para limpar só a área anterior)
+    ctx.clearRect(
+      0,
+      0,
+      overlayCanvasRef.current.width,
+      overlayCanvasRef.current.height
+    );
+
+    const { x, y } = mousePosRef.current;
+
+    // Desenhar cursor do pincel
+    // Desenhar cursor ou preview de forma
+    if (selectedLayer.selection?.maskMode === "brush") {
+      const tool = selectedLayer.selection.brushTool;
+      const size = selectedLayer.selection.brushSize;
+
+      // Se estiver arrastando uma forma (Retangulo/Elipse)
+      if (
+        lastMaskPosRef.current &&
+        (tool === "rectangle" || tool === "ellipse")
+      ) {
+        const start = lastMaskPosRef.current;
+        const w = x - start.x;
+        const h = y - start.y;
+
+        ctx.strokeStyle = "#00ffcc"; // Cor de destaque para preview
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+
+        if (tool === "rectangle") {
+          ctx.strokeRect(start.x, start.y, w, h);
+        } else {
+          ctx.beginPath();
+          ctx.ellipse(
+            start.x + w / 2,
+            start.y + h / 2,
+            Math.abs(w) / 2,
+            Math.abs(h) / 2,
+            0,
+            0,
+            Math.PI * 2
+          );
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      }
+      // Se for pincel ou apenas hover (sem arrastar forma)
+      else {
+        ctx.beginPath();
+        ctx.arc(x, y, size / 2, 0, Math.PI * 2);
+        ctx.strokeStyle = "white";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(x, y, size / 2, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(0,0,0,0.5)";
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+    }
+  }, [selectedLayer]);
+
+  // Função para forçar re-render apenas visual do canvas principal sem React Render
+  const renderLayerPreview = useCallback(() => {
+    if (!rafRef.current) {
+      if (!(window as any)["maskUpdatePending"]) {
+        (window as any)["maskUpdatePending"] = true;
+        requestAnimationFrame(() => {
+          // Assuming processLayers exists in scope (it should be in App.tsx)
+          // processLayers(); // Uncomment if processLayers is available
+          (window as any)["maskUpdatePending"] = false;
+        });
+      }
+    }
+  }, []);
+
+  const handleMaskMouseMove = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      if (!canvasRef.current || !selectedLayer) return;
+
+      const rect = canvasRef.current.getBoundingClientRect();
+      const scaleX = canvasRef.current.width / rect.width;
+      const scaleY = canvasRef.current.height / rect.height;
+      const x = (e.clientX - rect.left) * scaleX;
+      const y = (e.clientY - rect.top) * scaleY;
+
+      // prevent default touch actions like scroll
+      // e.preventDefault(); // PointerEvent typically handles this via CSS touch-action
+
+      // Atualizar posição para o loop de desenho
+      mousePosRef.current = { x, y };
+
+      // Se não tiver loop rodando, inicia um frame
+      if (!rafRef.current) {
+        rafRef.current = requestAnimationFrame(() => {
+          drawOverlayLoop();
+          rafRef.current = null;
+        });
+      }
+
+      // Lógica de DESENHO NA MÁSCARA (Comportamento destrutivo/paint)
+      // Usando isMaskDrawing em vez de isDrawing (que não existe)
+      if (isMaskDrawing && selectedLayer.selection?.maskMode === "brush") {
+        const tool = selectedLayer.selection.brushTool;
+
+        // CRITICAL: Only continuously draw for brush/eraser.
+        // Shapes (rectangle/ellipse) are drawn only on MouseUp.
+        if (tool === "brush" || tool === "eraser") {
+          const ctx = maskCanvasRef.current?.getContext("2d");
+          if (ctx) {
+            const blur = 0;
+            if (ctx.filter !== `blur(${blur}px)`) {
+              ctx.filter = `blur(${blur}px)`;
+            }
+
+            ctx.beginPath();
+            ctx.arc(
+              x,
+              y,
+              selectedLayer.selection.brushSize / 2,
+              0,
+              Math.PI * 2
+            );
+
+            ctx.fillStyle = "white";
+
+            if (e.buttons === 2 || tool === "eraser") {
+              ctx.globalCompositeOperation = "destination-out";
+              ctx.fill();
+              ctx.globalCompositeOperation = "source-over";
+            } else {
+              ctx.fill();
+            }
+
+            renderLayerPreview();
+          }
+        }
+      }
+    },
+    [selectedLayer, drawOverlayLoop, isMaskDrawing, renderLayerPreview]
+  );
+
+  const handleMaskMouseUp = useCallback(
+    (e: React.PointerEvent) => {
+      if (!isMaskDrawing || !selectedLayer?.selection || !maskCanvasRef.current)
+        return;
+
+      const ctx = maskCanvasRef.current.getContext("2d");
+      if (!ctx) return;
+
+      const tool = selectedLayer.selection.brushTool;
+
+      // Draw shapes on mouse up
+      if (tool === "rectangle" || tool === "ellipse") {
+        const pos = getMaskPos(e);
+        const start = lastMaskPosRef.current || pos;
+
+        ctx.globalCompositeOperation = "source-over";
+        ctx.fillStyle = "rgba(255, 100, 50, 255)";
+
+        const x = Math.min(start.x, pos.x);
+        const y = Math.min(start.y, pos.y);
+        const w = Math.abs(pos.x - start.x);
+        const h = Math.abs(pos.y - start.y);
+
+        if (tool === "rectangle") {
+          ctx.fillRect(x, y, w, h);
+        } else {
+          ctx.beginPath();
+          ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+
+        // Limpar preview
+        const overlayCtx = overlayCanvasRef.current?.getContext("2d");
+        if (overlayCtx && overlayCanvasRef.current) {
+          overlayCtx.clearRect(
+            0,
+            0,
+            overlayCanvasRef.current.width,
+            overlayCanvasRef.current.height
+          );
+        }
+      }
+
+      // Save mask data
+      const imgData = ctx.getImageData(
+        0,
+        0,
+        maskCanvasRef.current!.width,
+        maskCanvasRef.current!.height
+      );
+      setLayers((prev) =>
+        prev.map((l) =>
+          l.id === selectedLayerId && l.selection
+            ? { ...l, selection: { ...l.selection, maskData: imgData.data } }
+            : l
+        )
+      );
+
+      setIsMaskDrawing(false);
+      lastMaskPosRef.current = null;
+    },
+    [isMaskDrawing, selectedLayer, selectedLayerId, getMaskPos]
+  );
+
+  // Construir LUT da curva
+  const buildCurveLUT = useCallback((points: CurvePoint[]): number[] => {
+    const lut = new Array(256);
+    const sorted = [...points].sort((a, b) => a.x - b.x);
+
+    for (let i = 0; i < 256; i++) {
+      let p1 = sorted[0];
+      let p2 = sorted[sorted.length - 1];
+
+      for (let j = 0; j < sorted.length - 1; j++) {
+        if (sorted[j].x <= i && sorted[j + 1].x >= i) {
+          p1 = sorted[j];
+          p2 = sorted[j + 1];
+          break;
+        }
+      }
+
+      if (p2.x === p1.x) {
+        lut[i] = Math.round(p1.y);
+      } else {
+        const t = (i - p1.x) / (p2.x - p1.x);
+        lut[i] = Math.round(p1.y + t * (p2.y - p1.y));
+      }
+      lut[i] = Math.max(0, Math.min(255, lut[i]));
+    }
+    return lut;
+  }, []);
+
+  // Processamento principal com camadas
+  useEffect(() => {
+    if (!originalImageData || !canvasRef.current) return;
+
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+
+    canvas.width = originalImageData.width;
+    canvas.height = originalImageData.height;
+
+    // Começar com dados originais
+    let data = new Uint8ClampedArray(originalImageData.data);
+
+    // Aplicar cada camada visível
+    for (const layer of layers) {
+      if (!layer.visible) continue;
+      const opacity = layer.opacity;
+
+      // Cor
+      if (layer.type === "cor" && layer.color && layer.colorBalance) {
+        for (let i = 0; i < data.length; i += 4) {
+          const origR = data[i],
+            origG = data[i + 1],
+            origB = data[i + 2];
+          let r = origR,
+            g = origG,
+            b = origB;
+
+          const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+
+          // Color Balance
+          const shadowWeight = Math.pow(1 - luminance, 2);
+          r += layer.colorBalance.shadows.r * shadowWeight * 0.5;
+          g += layer.colorBalance.shadows.g * shadowWeight * 0.5;
+          b += layer.colorBalance.shadows.b * shadowWeight * 0.5;
+
+          const midWeight = 1 - Math.abs(luminance - 0.5) * 2;
+          r += layer.colorBalance.midtones.r * midWeight * 0.5;
+          g += layer.colorBalance.midtones.g * midWeight * 0.5;
+          b += layer.colorBalance.midtones.b * midWeight * 0.5;
+
+          const highWeight = Math.pow(luminance, 2);
+          r += layer.colorBalance.highlights.r * highWeight * 0.5;
+          g += layer.colorBalance.highlights.g * highWeight * 0.5;
+          b += layer.colorBalance.highlights.b * highWeight * 0.5;
+
+          // Blend com opacidade
+          data[i] = Math.max(0, Math.min(255, origR + (r - origR) * opacity));
+          data[i + 1] = Math.max(
+            0,
+            Math.min(255, origG + (g - origG) * opacity)
+          );
+          data[i + 2] = Math.max(
+            0,
+            Math.min(255, origB + (b - origB) * opacity)
+          );
+        }
+      }
+
+      // Curvas
+      if (layer.type === "curvas" && layer.curves) {
+        const rgbLUT = buildCurveLUT(layer.curves.rgb);
+        const rLUT = buildCurveLUT(layer.curves.r);
+        const gLUT = buildCurveLUT(layer.curves.g);
+        const bLUT = buildCurveLUT(layer.curves.b);
+
+        for (let i = 0; i < data.length; i += 4) {
+          const origR = data[i],
+            origG = data[i + 1],
+            origB = data[i + 2];
+          const r = rLUT[rgbLUT[origR]];
+          const g = gLUT[rgbLUT[origG]];
+          const b = bLUT[rgbLUT[origB]];
+
+          data[i] = Math.round(origR + (r - origR) * opacity);
+          data[i + 1] = Math.round(origG + (g - origG) * opacity);
+          data[i + 2] = Math.round(origB + (b - origB) * opacity);
+        }
+      }
+
+      // Efeitos (grain)
+      if (
+        layer.type === "efeitos" &&
+        layer.effects &&
+        layer.effects.grain > 0
+      ) {
+        for (let i = 0; i < data.length; i += 4) {
+          const noise =
+            (Math.random() - 0.5) * layer.effects.grain * 2 * opacity;
+          data[i] = Math.max(0, Math.min(255, data[i] + noise));
+          data[i + 1] = Math.max(0, Math.min(255, data[i + 1] + noise));
+          data[i + 2] = Math.max(0, Math.min(255, data[i + 2] + noise));
+        }
+      }
+
+      // Seleção de cor
+      if (
+        layer.type === "selecao" &&
+        layer.selection &&
+        layer.selection.selectedColor
+      ) {
+        const sel = layer.selection;
+        const { localHue, localSaturation, localBrightness, tolerance } = sel;
+
+        if (
+          localHue !== 0 ||
+          localSaturation !== 0 ||
+          localBrightness !== 0 ||
+          (showMask && layer.id === selectedLayerId)
+        ) {
+          for (let i = 0; i < data.length; i += 4) {
+            const r = data[i],
+              g = data[i + 1],
+              b = data[i + 2];
+            const pixelHsl = rgbToHsl(r, g, b);
+
+            let hueDiff = Math.abs(pixelHsl.h - sel.selectedColor!.h);
+            if (hueDiff > 180) hueDiff = 360 - hueDiff;
+            const satDiff = Math.abs(pixelHsl.s - sel.selectedColor!.s);
+            const lumDiff = Math.abs(pixelHsl.l - sel.selectedColor!.l);
+
+            const totalDiff =
+              (hueDiff / 180) * 50 +
+              (satDiff / 100) * 30 +
+              (lumDiff / 100) * 20;
+
+            if (totalDiff <= tolerance) {
+              const strength = (1 - totalDiff / tolerance) * opacity;
+
+              if (showMask && layer.id === selectedLayerId) {
+                data[i] = Math.min(255, r + 100 * strength);
+                data[i + 1] = Math.round(g * (1 - strength * 0.5));
+                data[i + 2] = Math.round(b * (1 - strength * 0.5));
+              } else {
+                let newH = pixelHsl.h + localHue * strength;
+                let newS = pixelHsl.s + localSaturation * strength;
+                let newL = pixelHsl.l + localBrightness * strength * 0.5;
+
+                while (newH < 0) newH += 360;
+                while (newH >= 360) newH -= 360;
+                newS = Math.max(0, Math.min(100, newS));
+                newL = Math.max(0, Math.min(100, newL));
+
+                const [newR, newG, newB] = hslToRgb(newH, newS, newL);
+                data[i] = newR;
+                data[i + 1] = newG;
+                data[i + 2] = newB;
+              }
+            }
+          }
+        }
+      }
+
+      // Seleção por máscara pintada (brush mode)
+      if (
+        layer.type === "selecao" &&
+        layer.selection &&
+        layer.selection.maskMode === "brush" &&
+        layer.selection.maskData
+      ) {
+        const sel = layer.selection;
+        const { localHue, localSaturation, localBrightness } = sel;
+        const maskData = sel.maskData!;
+
+        const hasAdjustments =
+          localHue !== 0 || localSaturation !== 0 || localBrightness !== 0;
+        const shouldShowMask = showMask && layer.id === selectedLayerId;
+
+        if (hasAdjustments || shouldShowMask) {
+          // Pre-calculate hue shift in radians for faster math
+          const hueShift = localHue;
+
+          for (let i = 0; i < data.length; i += 4) {
+            const maskR = maskData[i] || 0;
+            const maskAlpha = maskData[i + 3] || 0;
+            const maskStrength = Math.max(maskR, maskAlpha);
+
+            if (maskStrength > 0) {
+              const strength = (maskStrength / 255) * opacity;
+              const r = data[i],
+                g = data[i + 1],
+                b = data[i + 2];
+
+              if (shouldShowMask && !hasAdjustments) {
+                // Only show mask overlay (no color change)
+                data[i] = Math.min(255, r + 80 * strength);
+                data[i + 1] = Math.round(g * (1 - strength * 0.2));
+                data[i + 2] = Math.round(b * (1 - strength * 0.2));
+              } else if (hasAdjustments) {
+                // Apply HSL adjustments
+                const pixelHsl = rgbToHsl(r, g, b);
+                let newH = pixelHsl.h + hueShift * strength;
+                let newS = pixelHsl.s + localSaturation * strength;
+                let newL = pixelHsl.l + localBrightness * strength * 0.5;
+
+                if (newH < 0) newH += 360;
+                else if (newH >= 360) newH -= 360;
+                if (newS < 0) newS = 0;
+                else if (newS > 100) newS = 100;
+                if (newL < 0) newL = 0;
+                else if (newL > 100) newL = 100;
+
+                const [newR, newG, newB] = hslToRgb(newH, newS, newL);
+
+                if (shouldShowMask) {
+                  // Blend adjusted color with mask overlay
+                  data[i] = Math.min(255, newR + 40 * strength);
+                  data[i + 1] = newG;
+                  data[i + 2] = newB;
+                } else {
+                  data[i] = newR;
+                  data[i + 1] = newG;
+                  data[i + 2] = newB;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // Criar ImageData com dados processados das camadas
+    let workingData = new ImageData(
+      data,
+      originalImageData.width,
+      originalImageData.height
+    );
+    
+    // Aplicar máscaras profissionais se houver
+    if (maskLayers.length > 0) {
+      workingData = processAllMaskLayers(workingData, maskLayers);
+    }
+    
+    ctx.putImageData(workingData, 0, 0);
+    setProcessedImageData(workingData);
+
+    // Aplicar CSS filters das camadas de cor e efeitos
+    const colorLayers = layers.filter(
+      (l) => l.visible && l.type === "cor" && l.color
+    );
+    const effectLayers = layers.filter(
+      (l) => l.visible && l.type === "efeitos" && l.effects
+    );
+
+    let exposure = 100,
+      brightness = 100,
+      contrast = 100,
+      saturation = 100,
+      hue = 0,
+      sepia = 0,
+      blur = 0,
+      vignette = 0;
+
+    for (const l of colorLayers) {
+      if (l.color) {
+        const o = l.opacity;
+        exposure += (l.color.exposure - 100) * o;
+        brightness += (l.color.brightness - 100) * o;
+        contrast += (l.color.contrast - 100) * o;
+        saturation += (l.color.saturation - 100) * o;
+        hue += l.color.hue * o;
+      }
+    }
+
+    for (const l of effectLayers) {
+      if (l.effects) {
+        const o = l.opacity;
+        sepia += l.effects.sepia * o;
+        blur += l.effects.blur * o;
+        vignette += l.effects.vignette * o;
+      }
+    }
+
+    const tempCanvas = document.createElement("canvas");
+    tempCanvas.width = canvas.width;
+    tempCanvas.height = canvas.height;
+    const tempCtx = tempCanvas.getContext("2d");
+    if (tempCtx) {
+      tempCtx.filter = `brightness(${exposure}%) brightness(${brightness}%) contrast(${contrast}%) saturate(${saturation}%) sepia(${sepia}%) hue-rotate(${hue}deg) blur(${blur}px)`;
+      tempCtx.drawImage(canvas, 0, 0);
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(tempCanvas, 0, 0);
+
+      if (vignette > 0) {
+        const w = canvas.width;
+        const h = canvas.height;
+        const cx = w / 2;
+        const cy = h / 2;
+        const radius = Math.max(w, h) * 0.7;
+        const grad = ctx.createRadialGradient(
+          cx,
+          cy,
+          radius * (1 - vignette / 100),
+          cx,
+          cy,
+          radius
+        );
+        grad.addColorStop(0, "rgba(0,0,0,0)");
+        grad.addColorStop(1, "rgba(0,0,0,0.7)");
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, w, h);
+      }
+    }
+  }, [originalImageData, layers, showMask, selectedLayerId, buildCurveLUT, maskLayers]);
+
+  // History
+  const [history, setHistory] = useState<Layer[][]>([]);
+  const [redoStack, setRedoStack] = useState<Layer[][]>([]);
+  const [shortcuts, setShortcuts] = useState<Shortcuts>(defaultShortcuts);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [activeColorTab, setActiveColorTab] = useState<
+    "lift" | "gamma" | "gain"
+  >("lift");
+  const [showOriginal, setShowOriginal] = useState(false);
+
+  // Split Screen State
+  const [isSplitView, setIsSplitView] = useState(false);
+  const [splitPos, setSplitPos] = useState(50); // percentage
+  const [isDraggingSplit, setIsDraggingSplit] = useState(false);
+
+  const saveToHistory = useCallback((newLayers: Layer[]) => {
+    setHistory((prev) => [...prev.slice(-10), newLayers]); // Limit history to last 10 states
+    setRedoStack([]);
+  }, []);
+
+  const undo = useCallback(() => {
+    if (history.length === 0) return;
+    const previous = history[history.length - 1];
+    const newHistory = history.slice(0, -1);
+    setRedoStack((prev) => [layers, ...prev]);
+    setHistory(newHistory);
+    // Directly set layers without saving to history again loop
+    // But we need to bypass saveToHistory in setLayers if we were using a single setter wrapper
+    // Here we just set state directly
+    setLayersWrapper(previous, false);
+  }, [history, layers]);
+
+  const redo = useCallback(() => {
+    if (redoStack.length === 0) return;
+    const next = redoStack[0];
+    const newRedoStack = redoStack.slice(1);
+    setHistory((prev) => [...prev, layers]);
+    setRedoStack(newRedoStack);
+    setLayersWrapper(next, false);
+  }, [redoStack, layers]);
+
+  // Wrapper for setLayers to handle history
+  const setLayersWrapper = useCallback(
+    (
+      newLayersOrUpdater: Layer[] | ((curr: Layer[]) => Layer[]),
+      save: boolean = true
+    ) => {
+      setLayers((prev) => {
+        const newLayers =
+          typeof newLayersOrUpdater === "function"
+            ? newLayersOrUpdater(prev)
+            : newLayersOrUpdater;
+        if (save && prev !== newLayers) {
+          saveToHistory(prev);
+        }
+        return newLayers;
+      });
+    },
+    [saveToHistory]
+  );
+
+  // Shortcuts Listener
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (isSettingsOpen) return; // Disable shortcuts when modal is open
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      )
+        return;
+
+      let key = e.key;
+      if (key === " ") key = "Space";
+
+      let prefix = "";
+      if (e.ctrlKey) prefix += "Control+";
+      if (e.shiftKey) prefix += "Shift+";
+      if (e.altKey) prefix += "Alt+";
+
+      const combo = prefix + key;
+
+      if (combo === shortcuts.undo.key) {
+        e.preventDefault();
+        undo();
+      }
+      if (combo === shortcuts.redo.key) {
+        e.preventDefault();
+        redo();
+      }
+      if (combo === shortcuts.deleteNode.key && selectedLayerId) {
+        e.preventDefault();
+        deleteLayer(selectedLayerId);
+      }
+      if (combo === shortcuts.toggleView.key) {
+        e.preventDefault();
+        setShowOriginal(true);
+      }
+
+      if (combo === shortcuts.brushSizeUp.key && selectedLayerId) {
+        setLayers((prev) =>
+          prev.map((l) =>
+            l.id === selectedLayerId && l.selection?.brushSize
+              ? {
+                  ...l,
+                  selection: {
+                    ...l.selection,
+                    brushSize: Math.min(200, l.selection.brushSize + 5),
+                  },
+                }
+              : l
+          )
+        );
+      }
+      if (combo === shortcuts.brushSizeDown.key && selectedLayerId) {
+        setLayers((prev) =>
+          prev.map((l) =>
+            l.id === selectedLayerId && l.selection?.brushSize
+              ? {
+                  ...l,
+                  selection: {
+                    ...l.selection,
+                    brushSize: Math.max(1, l.selection.brushSize - 5),
+                  },
+                }
+              : l
+          )
+        );
+      }
+    };
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (
+        e.key === shortcuts.toggleView.key ||
+        (shortcuts.toggleView.key === "\\" && e.key === "\\")
+      ) {
+        setShowOriginal(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [shortcuts, isSettingsOpen, undo, redo, selectedLayerId]);
+
+  // Layer management
+  const addLayer = useCallback(
+    (type: LayerType) => {
+      const newLayer = createDefaultLayer(type, layers.length);
+      setLayersWrapper((prev) => [...prev, newLayer]);
+      setSelectedLayerId(newLayer.id);
+    },
+    [layers.length, setLayersWrapper]
+  );
+
+  const deleteLayer = useCallback(
+    (id: string) => {
+      setLayersWrapper((prev) => prev.filter((l) => l.id !== id));
+      if (selectedLayerId === id) {
+        setSelectedLayerId(layers[0]?.id || null);
+      }
+    },
+    [selectedLayerId, layers, setLayersWrapper]
+  );
+
+  const toggleVisibility = useCallback(
+    (id: string) => {
+      setLayersWrapper((prev) =>
+        prev.map((l) => (l.id === id ? { ...l, visible: !l.visible } : l))
+      );
+    },
+    [setLayersWrapper]
+  );
+
+  const updateLayerOpacity = useCallback((id: string, opacity: number) => {
+    // For sliders (high frequency), we might want to skip history until mouse up
+    // For now, simpler implementation:
+    setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, opacity } : l)));
+  }, []);
+
+  const updateSelectedLayer = useCallback(
+    (updates: Partial<Layer>) => {
+      if (!selectedLayerId) return;
+      setLayers((prev) =>
+        prev.map((l) => (l.id === selectedLayerId ? { ...l, ...updates } : l))
+      );
+    },
+    [selectedLayerId]
+  );
+
+  // === HANDLERS DO SISTEMA DE MÁSCARAS PROFISSIONAIS ===
+
+  const handleMaskLayersChange = useCallback((newLayers: MaskLayer[]) => {
+    setMaskLayers(newLayers);
+  }, []);
+
+  const handleMaskUpdate = useCallback((layerId: string, updates: Partial<Mask>) => {
+    setMaskLayers(prev => prev.map(l => 
+      l.id === layerId 
+        ? { ...l, mask: { ...l.mask, ...updates } }
+        : l
+    ));
+  }, []);
+
+  const handleColorSampled = useCallback((layerId: string, hsl: { h: number; s: number; l: number }) => {
+    setMaskLayers(prev => prev.map(l => {
+      if (l.id !== layerId || !l.mask.colorRange) return l;
+      
+      // Adicionar cor à lista de cores amostradas
+      const newSampledColors = [...l.mask.colorRange.sampledColors, hsl];
+      
+      // Calcular novo centro baseado nas cores amostradas
+      const avgH = newSampledColors.reduce((sum, c) => sum + c.h, 0) / newSampledColors.length;
+      const avgS = newSampledColors.reduce((sum, c) => sum + c.s, 0) / newSampledColors.length;
+      const avgL = newSampledColors.reduce((sum, c) => sum + c.l, 0) / newSampledColors.length;
+      
+      return {
+        ...l,
+        mask: {
+          ...l.mask,
+          colorRange: {
+            ...l.mask.colorRange,
+            hueCenter: avgH,
+            saturationCenter: avgS,
+            luminanceCenter: avgL,
+            sampledColors: newSampledColors
+          }
+        }
+      };
+    }));
+  }, []);
+
+  // Save history on mouse up for sliders?
+  // Complex to implement without wrapping all sliders.
+  // Let's settle for major actions for now.
+
+  const resetAll = useCallback(() => {
+    setLayersWrapper([]);
+    setSelectedLayerId(null);
+    setShowMask(false);
+  }, [setLayersWrapper]);
+
+  const downloadImage = useCallback(() => {
+    if (!canvasRef.current) return;
+    setShowMask(false);
+    setTimeout(() => {
+      const link = document.createElement("a");
+      link.download = "imagem-colorizada.png";
+      link.href = canvasRef.current!.toDataURL("image/png");
+      link.click();
+    }, 100);
+  }, []);
+
+  const applyAI = useCallback(async () => {
+    if (!aiPrompt.trim()) {
+      setAiExplanation(
+        "💡 Digite um estilo: cinematico, quente, frio, vibrante, vintage, dramatico"
+      );
+      return;
+    }
+    setIsLoading(true);
+    try {
+      const suggestion = await AIService.analyzePrompt(aiPrompt);
+
+      // Criar camada de cor com as sugestões
+      const newLayer = createDefaultLayer("cor", layers.length);
+      if (newLayer.color) {
+        newLayer.color.brightness = suggestion.brightness;
+        newLayer.color.contrast = suggestion.contrast;
+        newLayer.color.saturation = suggestion.saturation;
+        newLayer.color.temperature = suggestion.temperature;
+        newLayer.color.tint = suggestion.tint;
+      }
+      if (newLayer.name) {
+        newLayer.name = `IA: ${aiPrompt}`;
+      }
+
+      // Criar camada de efeitos se vignette
+      if (suggestion.vignette > 0) {
+        const effectLayer = createDefaultLayer("efeitos", layers.length + 1);
+        if (effectLayer.effects) {
+          effectLayer.effects.vignette = suggestion.vignette;
+          effectLayer.name = `IA: Efeitos`;
+        }
+        setLayers((prev) => [...prev, newLayer, effectLayer]);
+        setSelectedLayerId(effectLayer.id);
+      } else {
+        setLayers((prev) => [...prev, newLayer]);
+        setSelectedLayerId(newLayer.id);
+      }
+
+      setAiExplanation(suggestion.explanation);
+    } catch {
+      setAiExplanation("❌ Falha ao aplicar estilo.");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [aiPrompt, layers.length]);
+
+  return (
+    <div className="flex flex-col h-screen w-screen bg-neutral-950 text-white font-sans overflow-hidden">
+      <canvas ref={hiddenCanvasRef} className="hidden" />
+
+      {/* Top Area: Controls + Viewer */}
+      <div className="flex-1 flex flex-col lg:flex-row min-h-0 w-full overflow-hidden">
+        {/* Painel de Controle */}
+        <div className="w-full lg:w-72 bg-neutral-900 flex flex-col border-r border-neutral-800 shrink-0 overflow-hidden order-2 lg:order-1 h-1/2 lg:h-auto">
+          <div className="p-3 border-b border-neutral-800">
+            <div className="flex items-center gap-3">
+              <img
+                src="./Iris.png"
+                className="w-8 h-8 object-contain"
+                alt="Iris"
+              />
+              <h1 className="text-2xl font-bold bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+                Iris
+              </h1>
+            </div>
+            <button
+              onClick={() => setIsSettingsOpen(true)}
+              className="p-2 text-gray-400 hover:text-white hover:bg-neutral-800 rounded-full transition"
+              title="Configurações de Atalhos"
+            >
+              <Settings size={18} />
+            </button>
+          </div>
+
+          {/* Conteúdo da camada selecionada */}
+          <div className="flex-1 overflow-y-auto p-3 space-y-4">
+            {!selectedLayer ? (
+              <div className="text-center py-8 text-gray-500 text-sm">
+                Selecione ou adicione uma camada para editar
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-2 bg-neutral-800 px-2 py-1 rounded mb-2">
+                  <span className="text-xs text-gray-400 whitespace-nowrap">
+                    Editando:
+                  </span>
+                  <input
+                    type="text"
+                    value={selectedLayer.name}
+                    onChange={(e) =>
+                      updateSelectedLayer({ name: e.target.value })
+                    }
+                    className="bg-transparent text-white text-xs font-medium focus:outline-none w-full"
+                  />
+                </div>
+
+                <div className="space-y-2 pb-4 border-b border-neutral-800">
+                  <div className="flex justify-between text-xs text-gray-500">
+                    <span>Opacidade da Camada</span>
+                    <span>{Math.round(selectedLayer.opacity * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                    value={selectedLayer.opacity}
+                    onChange={(e) =>
+                      updateLayerOpacity(
+                        selectedLayer.id,
+                        Number(e.target.value)
+                      )
+                    }
+                    className="w-full h-1.5 bg-neutral-700 rounded-lg appearance-none cursor-pointer hover:bg-neutral-600 transition-colors accent-white"
+                  />
+                </div>
+
+                {selectedLayer.type === "cor" && selectedLayer.color && (
+                  <div className="space-y-6">
+                    {/* Tabs for Lift/Gamma/Gain */}
+                    <div className="flex bg-neutral-800 p-1 rounded-lg relative isolate">
+                      {/* Animated Background for Active Tab could be added here, but simple class switching is easier for now */}
+                      {(["lift", "gamma", "gain"] as const).map((tab) => (
+                        <button
+                          key={tab}
+                          onClick={() => setActiveColorTab(tab)}
+                          className={`flex-1 py-1.5 text-xs font-bold uppercase rounded-md transition-all duration-300 ease-out relative z-10 ${
+                            activeColorTab === tab
+                              ? "bg-neutral-600 text-white shadow-md scale-105"
+                              : "text-gray-500 hover:text-gray-300 hover:bg-neutral-700/50"
+                          }`}
+                        >
+                          {tab}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Main Wheel Area */}
+                    <div className="flex flex-col items-center bg-neutral-900 border border-neutral-800 rounded-xl p-4 shadow-inner relative overflow-hidden">
+                      {/* Background Detail */}
+                      <div className="absolute inset-0 bg-gradient-to-b from-transparent to-black/20 pointer-events-none" />
+
+                      <ColorWheel
+                        label={
+                          activeColorTab === "lift"
+                            ? "Sombras"
+                            : activeColorTab === "gamma"
+                            ? "Médios"
+                            : "Luzes"
+                        }
+                        color={
+                          activeColorTab === "lift"
+                            ? selectedLayer.colorBalance?.shadows || {
+                                r: 0,
+                                g: 0,
+                                b: 0,
+                              }
+                            : activeColorTab === "gamma"
+                            ? selectedLayer.colorBalance?.midtones || {
+                                r: 0,
+                                g: 0,
+                                b: 0,
+                              }
+                            : selectedLayer.colorBalance?.highlights || {
+                                r: 0,
+                                g: 0,
+                                b: 0,
+                              }
+                        }
+                        onChange={(c) => {
+                          if (!selectedLayer.colorBalance) return;
+                          const key =
+                            activeColorTab === "lift"
+                              ? "shadows"
+                              : activeColorTab === "gamma"
+                              ? "midtones"
+                              : "highlights";
+                          updateSelectedLayer({
+                            colorBalance: {
+                              ...selectedLayer.colorBalance,
+                              [key]: c,
+                            },
+                          });
+                        }}
+                        onReset={() => {
+                          if (!selectedLayer.colorBalance) return;
+                          const key =
+                            activeColorTab === "lift"
+                              ? "shadows"
+                              : activeColorTab === "gamma"
+                              ? "midtones"
+                              : "highlights";
+                          updateSelectedLayer({
+                            colorBalance: {
+                              ...selectedLayer.colorBalance,
+                              [key]: { r: 0, g: 0, b: 0 },
+                            },
+                          });
+                        }}
+                      />
+                    </div>
+
+                    {/* Sliders Area (Master + RGB) */}
+                    <div className="space-y-4 px-1">
+                      {(() => {
+                        const key =
+                          activeColorTab === "lift"
+                            ? "shadows"
+                            : activeColorTab === "gamma"
+                            ? "midtones"
+                            : "highlights";
+                        const currentVal = selectedLayer.colorBalance?.[
+                          key
+                        ] || { r: 0, g: 0, b: 0 };
+
+                        const updateChannel = (
+                          channel: "r" | "g" | "b",
+                          val: number
+                        ) => {
+                          if (!selectedLayer.colorBalance) return;
+                          updateSelectedLayer({
+                            colorBalance: {
+                              ...selectedLayer.colorBalance,
+                              [key]: { ...currentVal, [channel]: val },
+                            },
+                          });
+                        };
+
+                        return (
+                          <div className="space-y-3">
+                            {/* Individual Channels */}
+                            <div className="grid grid-cols-[auto_1fr_auto] gap-2 items-center text-xs">
+                              <span className="text-red-400 font-bold w-4">
+                                R
+                              </span>
+                              <input
+                                type="range"
+                                min="-100"
+                                max="100"
+                                value={currentVal.r}
+                                onChange={(e) =>
+                                  updateChannel("r", Number(e.target.value))
+                                }
+                                className="accent-red-500 h-1.5 bg-neutral-700 rounded-lg w-full appearance-none"
+                              />
+                              <span className="w-8 text-right font-mono text-neutral-500">
+                                {Math.round(currentVal.r)}
+                              </span>
+
+                              <span className="text-green-400 font-bold w-4">
+                                G
+                              </span>
+                              <input
+                                type="range"
+                                min="-100"
+                                max="100"
+                                value={currentVal.g}
+                                onChange={(e) =>
+                                  updateChannel("g", Number(e.target.value))
+                                }
+                                className="accent-green-500 h-1.5 bg-neutral-700 rounded-lg w-full appearance-none"
+                              />
+                              <span className="w-8 text-right font-mono text-neutral-500">
+                                {Math.round(currentVal.g)}
+                              </span>
+
+                              <span className="text-blue-400 font-bold w-4">
+                                B
+                              </span>
+                              <input
+                                type="range"
+                                min="-100"
+                                max="100"
+                                value={currentVal.b}
+                                onChange={(e) =>
+                                  updateChannel("b", Number(e.target.value))
+                                }
+                                className="accent-blue-500 h-1.5 bg-neutral-700 rounded-lg w-full appearance-none"
+                              />
+                              <span className="w-8 text-right font-mono text-neutral-500">
+                                {Math.round(currentVal.b)}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+
+                    {/* Basic Controls & Presets */}
+                    <div className="border-t border-neutral-800 pt-4 space-y-6">
+                      <div>
+                        <h3 className="text-xs font-bold text-gray-400 mb-3 uppercase flex items-center gap-2">
+                          <Sliders size={12} /> Primários
+                        </h3>
+                        <div className="space-y-3">
+                          <Slider
+                            label="Exposição"
+                            value={selectedLayer.color.exposure}
+                            min={50}
+                            max={150}
+                            onChange={(v) =>
+                              updateSelectedLayer({
+                                color: { ...selectedLayer.color!, exposure: v },
+                              })
+                            }
+                            color="#f97316"
+                          />
+                          <Slider
+                            label="Contraste"
+                            value={selectedLayer.color.contrast}
+                            min={0}
+                            max={200}
+                            onChange={(v) =>
+                              updateSelectedLayer({
+                                color: { ...selectedLayer.color!, contrast: v },
+                              })
+                            }
+                            color="#f97316"
+                          />
+                          <Slider
+                            label="Saturação"
+                            value={selectedLayer.color.saturation}
+                            min={0}
+                            max={200}
+                            onChange={(v) =>
+                              updateSelectedLayer({
+                                color: {
+                                  ...selectedLayer.color!,
+                                  saturation: v,
+                                },
+                              })
+                            }
+                            color="#f97316"
+                          />
+                          <Slider
+                            label="Temp."
+                            value={selectedLayer.color.temperature}
+                            min={-100}
+                            max={100}
+                            onChange={(v) =>
+                              updateSelectedLayer({
+                                color: {
+                                  ...selectedLayer.color!,
+                                  temperature: v,
+                                },
+                              })
+                            }
+                            color="#38bdf8"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {selectedLayer.type === "curvas" && selectedLayer.curves && (
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wide">
+                      Curvas de Tom
+                    </h3>
+                    <RGBCurves
+                      rgbPoints={selectedLayer.curves.rgb}
+                      rPoints={selectedLayer.curves.r}
+                      gPoints={selectedLayer.curves.g}
+                      bPoints={selectedLayer.curves.b}
+                      onRgbChange={(p) =>
+                        updateSelectedLayer({
+                          curves: { ...selectedLayer.curves!, rgb: p },
+                        })
+                      }
+                      onRChange={(p) =>
+                        updateSelectedLayer({
+                          curves: { ...selectedLayer.curves!, r: p },
+                        })
+                      }
+                      onGChange={(p) =>
+                        updateSelectedLayer({
+                          curves: { ...selectedLayer.curves!, g: p },
+                        })
+                      }
+                      onBChange={(p) =>
+                        updateSelectedLayer({
+                          curves: { ...selectedLayer.curves!, b: p },
+                        })
+                      }
+                    />
+                  </div>
+                )}
+
+                {selectedLayer.type === "efeitos" && selectedLayer.effects && (
+                  <div className="space-y-3">
+                    <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wide">
+                      Efeitos
+                    </h3>
+                    <Slider
+                      label="Vinheta"
+                      value={selectedLayer.effects.vignette}
+                      min={0}
+                      max={100}
+                      onChange={(v) =>
+                        updateSelectedLayer({
+                          effects: { ...selectedLayer.effects!, vignette: v },
+                        })
+                      }
+                      color="#78716c"
+                    />
+                    <Slider
+                      label="Sépia"
+                      value={selectedLayer.effects.sepia}
+                      min={0}
+                      max={100}
+                      onChange={(v) =>
+                        updateSelectedLayer({
+                          effects: { ...selectedLayer.effects!, sepia: v },
+                        })
+                      }
+                      color="#b45309"
+                    />
+                    <Slider
+                      label="Desfoque"
+                      value={selectedLayer.effects.blur}
+                      min={0}
+                      max={20}
+                      step={0.5}
+                      onChange={(v) =>
+                        updateSelectedLayer({
+                          effects: { ...selectedLayer.effects!, blur: v },
+                        })
+                      }
+                      color="#06b6d4"
+                    />
+                    <Slider
+                      label="Granulação"
+                      value={selectedLayer.effects.grain}
+                      min={0}
+                      max={50}
+                      onChange={(v) =>
+                        updateSelectedLayer({
+                          effects: { ...selectedLayer.effects!, grain: v },
+                        })
+                      }
+                      color="#a1a1aa"
+                    />
+                  </div>
+                )}
+
+                {selectedLayer.type === "selecao" &&
+                  selectedLayer.selection && (
+                    <>
+                      {/* Modo de Seleção */}
+                      <div className="space-y-2">
+                        <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wide">
+                          Modo de Seleção
+                        </h3>
+                        <div className="flex gap-1">
+                          <button
+                            onClick={() =>
+                              updateSelectedLayer({
+                                selection: {
+                                  ...selectedLayer.selection!,
+                                  maskMode: "color",
+                                },
+                              })
+                            }
+                            className={`flex-1 py-2 rounded text-xs font-medium ${
+                              selectedLayer.selection.maskMode === "color"
+                                ? "bg-orange-600"
+                                : "bg-neutral-800 hover:bg-neutral-700"
+                            }`}
+                          >
+                            Por Cor
+                          </button>
+                          <button
+                            onClick={() =>
+                              updateSelectedLayer({
+                                selection: {
+                                  ...selectedLayer.selection!,
+                                  maskMode: "brush",
+                                },
+                              })
+                            }
+                            className={`flex-1 py-2 rounded text-xs font-medium ${
+                              selectedLayer.selection.maskMode === "brush"
+                                ? "bg-orange-600"
+                                : "bg-neutral-800 hover:bg-neutral-700"
+                            }`}
+                          >
+                            Pincel/Forma
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Modo Por Cor */}
+                      {selectedLayer.selection.maskMode === "color" && (
+                        <>
+                          <button
+                            onClick={() => setIsSelectMode(!isSelectMode)}
+                            className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-lg transition text-sm font-medium ${
+                              isSelectMode
+                                ? "bg-orange-600 text-white"
+                                : "bg-neutral-800 text-gray-300 hover:bg-neutral-700"
+                            }`}
+                          >
+                            <MousePointer2 size={16} />
+                            {isSelectMode
+                              ? "Clique na imagem..."
+                              : "Selecionar Cor"}
+                          </button>
+
+                          <SelectionTools
+                            selectedColor={
+                              selectedLayer.selection.selectedColor
+                            }
+                            tolerance={selectedLayer.selection.tolerance}
+                            localHue={selectedLayer.selection.localHue}
+                            localSaturation={
+                              selectedLayer.selection.localSaturation
+                            }
+                            localBrightness={
+                              selectedLayer.selection.localBrightness
+                            }
+                            showMask={showMask}
+                            onToleranceChange={(v) =>
+                              updateSelectedLayer({
+                                selection: {
+                                  ...selectedLayer.selection!,
+                                  tolerance: v,
+                                },
+                              })
+                            }
+                            onLocalHueChange={(v) =>
+                              updateSelectedLayer({
+                                selection: {
+                                  ...selectedLayer.selection!,
+                                  localHue: v,
+                                },
+                              })
+                            }
+                            onLocalSaturationChange={(v) =>
+                              updateSelectedLayer({
+                                selection: {
+                                  ...selectedLayer.selection!,
+                                  localSaturation: v,
+                                },
+                              })
+                            }
+                            onLocalBrightnessChange={(v) =>
+                              updateSelectedLayer({
+                                selection: {
+                                  ...selectedLayer.selection!,
+                                  localBrightness: v,
+                                },
+                              })
+                            }
+                            onShowMaskChange={setShowMask}
+                            onClearSelection={() =>
+                              updateSelectedLayer({
+                                selection: {
+                                  ...selectedLayer.selection!,
+                                  selectedColor: null,
+                                  localHue: 0,
+                                  localSaturation: 0,
+                                  localBrightness: 0,
+                                },
+                              })
+                            }
+                          />
+                        </>
+                      )}
+
+                      {/* Modo Pincel/Forma */}
+                      {selectedLayer.selection.maskMode === "brush" && (
+                        <div className="space-y-3">
+                          <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wide">
+                            Ferramentas
+                          </h3>
+                          <div className="flex gap-1">
+                            {(
+                              [
+                                "brush",
+                                "eraser",
+                                "rectangle",
+                                "ellipse",
+                              ] as const
+                            ).map((tool) => (
+                              <button
+                                key={tool}
+                                onClick={() =>
+                                  updateSelectedLayer({
+                                    selection: {
+                                      ...selectedLayer.selection!,
+                                      brushTool: tool,
+                                    },
+                                  })
+                                }
+                                className={`flex-1 py-2 rounded text-[10px] ${
+                                  selectedLayer.selection?.brushTool === tool
+                                    ? "bg-orange-600"
+                                    : "bg-neutral-800 hover:bg-neutral-700"
+                                }`}
+                              >
+                                {tool === "brush"
+                                  ? "🖌️"
+                                  : tool === "eraser"
+                                  ? "🧹"
+                                  : tool === "rectangle"
+                                  ? "⬜"
+                                  : "⭕"}
+                              </button>
+                            ))}
+                          </div>
+
+                          {(selectedLayer.selection?.brushTool === "brush" ||
+                            selectedLayer.selection?.brushTool ===
+                              "eraser") && (
+                            <div className="space-y-1">
+                              <div className="flex justify-between">
+                                <span className="text-xs text-gray-500">
+                                  Tamanho
+                                </span>
+                                <span className="text-xs text-gray-500">
+                                  {selectedLayer.selection?.brushSize}px
+                                </span>
+                              </div>
+                              <input
+                                type="range"
+                                min={5}
+                                max={100}
+                                value={selectedLayer.selection?.brushSize}
+                                onChange={(e) =>
+                                  updateSelectedLayer({
+                                    selection: {
+                                      ...selectedLayer.selection!,
+                                      brushSize: Number(e.target.value),
+                                    },
+                                  })
+                                }
+                                className="w-full"
+                                style={{ accentColor: "#f97316" }}
+                              />
+                            </div>
+                          )}
+
+                          <button
+                            onClick={() => {
+                              // Clear the offscreen canvas
+                              if (maskCanvasRef.current) {
+                                const ctx =
+                                  maskCanvasRef.current.getContext("2d");
+                                if (ctx) {
+                                  ctx.clearRect(
+                                    0,
+                                    0,
+                                    maskCanvasRef.current.width,
+                                    maskCanvasRef.current.height
+                                  );
+                                }
+                              }
+                              // Clear the layer data
+                              updateSelectedLayer({
+                                selection: {
+                                  ...selectedLayer.selection!,
+                                  maskData: null,
+                                },
+                              });
+                            }}
+                            className="w-full py-2 bg-neutral-800 hover:bg-neutral-700 rounded text-xs text-red-400"
+                          >
+                            Limpar Máscara
+                          </button>
+
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-400">
+                              Mostrar Máscara
+                            </span>
+                            <button
+                              onClick={() => setShowMask(!showMask)}
+                              className={`w-10 h-5 rounded-full transition ${
+                                showMask ? "bg-orange-500" : "bg-neutral-700"
+                              }`}
+                            >
+                              <div
+                                className={`w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                                  showMask ? "translate-x-5" : "translate-x-0.5"
+                                }`}
+                              />
+                            </button>
+                          </div>
+
+                          <p className="text-[10px] text-gray-500 text-center bg-neutral-800 p-2 rounded">
+                            Pinte na imagem para criar máscara. Os ajustes
+                            abaixo só afetam a área pintada.
+                          </p>
+
+                          {/* Ajustes Locais */}
+                          <div className="space-y-3 pt-2 border-t border-neutral-800">
+                            <h3 className="text-xs font-medium text-gray-400 uppercase tracking-wide">
+                              Ajustes na Área
+                            </h3>
+                            <div className="space-y-1">
+                              <div className="flex justify-between">
+                                <span className="text-xs text-gray-500">
+                                  Mudar Cor
+                                </span>
+                                <span className="text-xs text-gray-500 font-mono">
+                                  {selectedLayer.selection?.localHue > 0
+                                    ? "+"
+                                    : ""}
+                                  {selectedLayer.selection?.localHue}°
+                                </span>
+                              </div>
+                              <input
+                                type="range"
+                                min={-180}
+                                max={180}
+                                value={selectedLayer.selection?.localHue}
+                                onChange={(e) =>
+                                  updateSelectedLayer({
+                                    selection: {
+                                      ...selectedLayer.selection!,
+                                      localHue: Number(e.target.value),
+                                    },
+                                  })
+                                }
+                                className="w-full"
+                                style={{ accentColor: "#22c55e" }}
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <div className="flex justify-between">
+                                <span className="text-xs text-gray-500">
+                                  Saturação
+                                </span>
+                                <span className="text-xs text-gray-500 font-mono">
+                                  {selectedLayer.selection?.localSaturation > 0
+                                    ? "+"
+                                    : ""}
+                                  {selectedLayer.selection?.localSaturation}
+                                </span>
+                              </div>
+                              <input
+                                type="range"
+                                min={-100}
+                                max={100}
+                                value={selectedLayer.selection?.localSaturation}
+                                onChange={(e) =>
+                                  updateSelectedLayer({
+                                    selection: {
+                                      ...selectedLayer.selection!,
+                                      localSaturation: Number(e.target.value),
+                                    },
+                                  })
+                                }
+                                className="w-full"
+                                style={{ accentColor: "#f97316" }}
+                              />
+                            </div>
+                            <div className="space-y-1">
+                              <div className="flex justify-between">
+                                <span className="text-xs text-gray-500">
+                                  Luminosidade
+                                </span>
+                                <span className="text-xs text-gray-500 font-mono">
+                                  {selectedLayer.selection?.localBrightness > 0
+                                    ? "+"
+                                    : ""}
+                                  {selectedLayer.selection?.localBrightness}
+                                </span>
+                              </div>
+                              <input
+                                type="range"
+                                min={-100}
+                                max={100}
+                                value={selectedLayer.selection?.localBrightness}
+                                onChange={(e) =>
+                                  updateSelectedLayer({
+                                    selection: {
+                                      ...selectedLayer.selection!,
+                                      localBrightness: Number(e.target.value),
+                                    },
+                                  })
+                                }
+                                className="w-full"
+                                style={{ accentColor: "#3b82f6" }}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  )}
+              </>
+            )}
+
+            {processedImageData && (
+              <div className="pt-2 border-t border-neutral-800">
+                <Histogram imageData={processedImageData} />
+              </div>
+            )}
+          </div>
+
+          {/* Ações */}
+          <div className="p-3 border-t border-neutral-800 space-y-2">
+            <div className="flex gap-2">
+              <button
+                onClick={resetAll}
+                className="flex-1 flex items-center justify-center gap-1 bg-neutral-800 py-2 rounded hover:bg-neutral-700 text-xs"
+              >
+                <RotateCcw size={12} /> Resetar
+              </button>
+              <button
+                onClick={downloadImage}
+                disabled={!image}
+                className="flex-1 flex items-center justify-center gap-1 bg-neutral-800 py-2 rounded hover:bg-neutral-700 text-xs disabled:opacity-50"
+              >
+                <Download size={12} /> Exportar
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <input
+                type="text"
+                value={aiPrompt}
+                onChange={(e) => setAiPrompt(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && applyAI()}
+                placeholder="Ex: cinematico, quente, vintage..."
+                className="w-full bg-neutral-800 border border-neutral-700 rounded-lg px-3 py-2 text-sm placeholder-gray-500 focus:outline-none focus:border-orange-500"
+              />
+              <button
+                onClick={applyAI}
+                disabled={isLoading}
+                className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-orange-500 to-red-600 py-2.5 rounded-lg hover:opacity-90 disabled:opacity-50 text-sm font-medium"
+              >
+                {isLoading ? (
+                  <Loader2 className="animate-spin" size={16} />
+                ) : (
+                  <Wand2 size={16} />
+                )}
+                {isLoading ? "Aplicando..." : "Aplicar Estilo"}
+              </button>
+              {aiExplanation && (
+                <p className="text-xs text-gray-400 bg-neutral-800 rounded p-2">
+                  {aiExplanation}
+                </p>
+              )}
+            </div>
+
+            <label className="cursor-pointer flex items-center justify-center gap-2 bg-neutral-800 py-2.5 rounded-lg hover:bg-neutral-700 text-sm">
+              <Upload size={16} /> Carregar Imagem
+              <input
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleImageUpload}
+              />
+            </label>
+          </div>
+        </div>{" "}
+        {/* This is the missing closing div for the sidebar */}
+        <div
+          className="flex-1 flex items-center justify-center bg-black overflow-hidden p-4 relative order-1 lg:order-2 h-1/2 lg:h-auto"
+          onWheel={(e) => {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? -0.1 : 0.1;
+            setZoom((z) => Math.max(0.1, Math.min(5, z + delta)));
+          }}
+        >
+          {image ? (
+            /* Canvas / Image Area */
+            <div
+              className="relative flex-1 bg-neutral-900/50 backdrop-blur-sm overflow-hidden flex items-center justify-center p-8 select-none w-full h-full"
+              onMouseMove={(e) => {
+                if (isSplitView && isDraggingSplit) {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const x = e.clientX - rect.left;
+                  const percent = Math.max(
+                    0,
+                    Math.min(100, (x / rect.width) * 100)
+                  );
+                  setSplitPos(percent);
+                }
+              }}
+              onMouseUp={() => setIsDraggingSplit(false)}
+              onMouseLeave={() => setIsDraggingSplit(false)}
+            >
+              {/* Split Screen Control Layer (Invisible when not splitting) */}
+              {isSplitView && (
+                <div
+                  className="absolute inset-0 z-50 cursor-col-resize"
+                  onMouseDown={() => setIsDraggingSplit(true)}
+                  style={{
+                    cursor: isDraggingSplit ? "col-resize" : "col-resize",
+                  }}
+                />
+              )}
+
+              <div
+                className="relative transition-transform duration-75 ease-out will-change-transform shadow-2xl"
+                style={{
+                  transform: `scale(${zoom})`,
+                  transformOrigin: "center",
+                }}
+                onMouseLeave={() => {
+                  const ctx = overlayCanvasRef.current?.getContext("2d");
+                  if (ctx && overlayCanvasRef.current) {
+                    // ctx.clearRect(0, 0, overlayCanvasRef.current.width, overlayCanvasRef.current.height);
+                  }
+                }}
+              >
+                {/* 1. Main Canvas (Edited - Bottom Layer) */}
+                <canvas
+                  ref={canvasRef}
+                  className="max-w-full max-h-full object-contain bg-[url('https://border-image.com/images/transparent-background.png')] bg-repeat"
+                  style={{ display: image ? "block" : "none", touchAction: 'none' }}
+                  onPointerDown={handleMaskMouseDown}
+                  onPointerMove={(e) => {
+                    handleMaskMouseMove(e);
+                  }}
+                  onPointerUp={handleMaskMouseUp}
+                />
+
+                {/* 2. Original Image Overlay (Split View - Top Layer) */}
+                {isSplitView && originalImageData && (
+                  <div
+                    className="absolute inset-0 pointer-events-none overflow-hidden"
+                    style={{ clipPath: `inset(0 ${100 - splitPos}% 0 0)` }}
+                  >
+                    <canvas
+                      ref={(ref) => {
+                        if (ref && originalImageData) {
+                          ref.width = originalImageData.width;
+                          ref.height = originalImageData.height;
+                          const ctx = ref.getContext("2d");
+                          if (ctx) ctx.putImageData(originalImageData, 0, 0);
+                        }
+                      }}
+                      className="w-full h-full object-contain"
+                    />
+                    {/* Label for Before */}
+                    <div className="absolute top-4 left-4 bg-black/50 text-white px-2 py-1 rounded text-xs font-bold uppercase backdrop-blur-md">
+                      Antes
+                    </div>
+                  </div>
+                )}
+
+                {/* Split Line Indicator */}
+                {isSplitView && (
+                  <div
+                    className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_10px_rgba(0,0,0,0.5)] z-30 pointer-events-none"
+                    style={{ left: `${splitPos}%` }}
+                  >
+                    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-8 h-8 bg-white rounded-full flex items-center justify-center text-black shadow-lg">
+                      <div className="flex gap-0.5">
+                        <div className="w-0.5 h-3 bg-black/20"></div>
+                        <div className="w-0.5 h-3 bg-black/20"></div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Label for After (Visible on right side) */}
+                {isSplitView && (
+                  <div className="absolute top-4 right-4 bg-black/50 text-white px-2 py-1 rounded text-xs font-bold uppercase backdrop-blur-md z-30 pointer-events-none">
+                    Depois
+                  </div>
+                )}
+
+                {/* 3. Helper Overlay (Cursor, Shapes) */}
+                <canvas
+                  ref={overlayCanvasRef}
+                  className="absolute top-0 left-0 w-full h-full pointer-events-none z-40"
+                />
+
+                {/* 4. Mask Canvas Overlay - Sistema de Máscaras Profissenschal */}
+                {showMaskPanel && originalImageData && (
+                  <MaskCanvasOverlay
+                    imageWidth={originalImageData.width}
+                    imageHeight={originalImageData.height}
+                    imageData={originalImageData}
+                    maskLayers={maskLayers}
+                    selectedLayerId={selectedMaskLayerId}
+                    showMaskOverlay={showMaskOverlay}
+                    onMaskUpdate={handleMaskUpdate}
+                    onColorSampled={handleColorSampled}
+                  />
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="text-neutral-600 flex flex-col items-center">
+              <Upload size={64} className="mb-4 opacity-30" />
+              <p className="text-lg">
+                Arraste uma imagem ou clique em Carregar Imagem
+              </p>
+            </div>
+          )}
+
+          {/* Zoom Controls */}
+          {image && (
+            <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-neutral-900/80 backdrop-blur rounded-full px-3 py-1.5">
+              <button
+                onClick={() => setZoom((z) => Math.max(0.1, z - 0.25))}
+                className="p-1 hover:bg-neutral-700 rounded"
+              >
+                <span className="text-lg font-bold">−</span>
+              </button>
+              <span className="text-xs w-12 text-center">
+                {Math.round(zoom * 100)}%
+              </span>
+              <button
+                onClick={() => setZoom((z) => Math.min(5, z + 0.25))}
+                className="p-1 hover:bg-neutral-700 rounded"
+              >
+                <span className="text-lg font-bold">+</span>
+              </button>
+              <button
+                onClick={() => setZoom(1)}
+                className="text-xs px-2 py-0.5 hover:bg-neutral-700 rounded"
+              >
+                100%
+              </button>
+            </div>
+          )}
+        </div>
+        
+        {/* Painel Lateral Direito - Presets e Máscaras */}
+        <div className="w-full lg:w-72 bg-neutral-900 border-l border-neutral-800 flex flex-col shrink-0 overflow-hidden order-3 h-1/2 lg:h-auto border-t lg:border-t-0 border-neutral-800">
+          {/* Tabs: Presets / Máscaras */}
+          <div className="flex border-b border-neutral-800">
+            <button
+              onClick={() => setShowMaskPanel(false)}
+              className={`flex-1 py-2 text-xs font-medium transition-colors ${
+                !showMaskPanel 
+                  ? 'bg-neutral-800 text-white border-b-2 border-orange-500' 
+                  : 'text-gray-400 hover:bg-neutral-800/50'
+              }`}
+            >
+              <Sliders size={12} className="inline mr-1" />
+              Presets
+            </button>
+            <button
+              onClick={() => setShowMaskPanel(true)}
+              className={`flex-1 py-2 text-xs font-medium transition-colors ${
+                showMaskPanel 
+                  ? 'bg-neutral-800 text-white border-b-2 border-orange-500' 
+                  : 'text-gray-400 hover:bg-neutral-800/50'
+              }`}
+            >
+              <Layers size={12} className="inline mr-1" />
+              Máscaras Pro
+            </button>
+          </div>
+          
+          {/* Conteúdo da Tab */}
+          <div className="flex-1 overflow-hidden">
+            {showMaskPanel ? (
+              <ProfessionalMaskPanel
+                maskLayers={maskLayers}
+                selectedLayerId={selectedMaskLayerId}
+                onLayersChange={handleMaskLayersChange}
+                onSelectLayer={setSelectedMaskLayerId}
+                showMaskOverlay={showMaskOverlay}
+                onToggleMaskOverlay={() => setShowMaskOverlay(prev => !prev)}
+              />
+            ) : (
+              <CustomPresetsPanel
+                layers={layers}
+                maskLayers={maskLayers}
+                onApplyPreset={(newLayers, newMaskLayers) => {
+                  setLayers(newLayers);
+                  if (newLayers.length > 0) {
+                    setSelectedLayerId(newLayers[0].id);
+                  }
+                  // Restaurar máscaras profissionais se existirem
+                  if (newMaskLayers && newMaskLayers.length > 0) {
+                    setMaskLayers(newMaskLayers);
+                    setSelectedMaskLayerId(newMaskLayers[0].id);
+                  }
+                }}
+                canvasRef={canvasRef}
+              />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Bottom Area: Node Graph & Toolbar */}
+      <div
+        className={`bg-neutral-900 border-t border-neutral-800 flex flex-col shrink-0 z-20 shadow-2xl transition-all duration-300 ease-in-out overflow-hidden ${
+          showGraph ? "h-80" : "h-10"
+        } hidden lg:flex`}
+      >
+        {/* Node Toolbar */}
+        <div className="h-10 border-b border-neutral-800 flex items-center px-4 gap-2 bg-neutral-800/50">
+          <span className="text-xs font-bold text-gray-400 uppercase mr-4 flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            Fluxo de Processamento
+          </span>
+
+          <button
+            onClick={() => setIsSplitView(!isSplitView)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 lg:mr-4 rounded text-xs transition border ${
+              isSplitView
+                ? "bg-blue-600 border-blue-500 text-white"
+                : "bg-neutral-800 border-neutral-700 hover:bg-neutral-700 text-gray-400"
+            }`}
+            title="Comparar Antes/Depois (Split View)"
+          >
+            <div className="flex w-3 h-3 overflow-hidden rounded-sm border border-current">
+              <div className="w-1.5 h-full bg-current opacity-50" />
+            </div>
+            Split View
+          </button>
+
+          <div className="h-4 w-px bg-neutral-700 mx-2" />
+
+          <button
+            onClick={() => addLayer("curvas")}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-700 hover:bg-neutral-600 rounded text-xs transition"
+          >
+            <Plus size={12} /> Curvas
+          </button>
+          <button
+            onClick={() => addLayer("cor")}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-700 hover:bg-neutral-600 rounded text-xs transition"
+          >
+            <Plus size={12} /> Cor
+          </button>
+          <button
+            onClick={() => addLayer("efeitos")}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-700 hover:bg-neutral-600 rounded text-xs transition"
+          >
+            <Plus size={12} /> Efeitos
+          </button>
+
+          <div className="flex-1" />
+
+          <div className="flex items-center gap-2">
+            {selectedLayerId && (
+              <button
+                onClick={() => deleteLayer(selectedLayerId)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-red-900/30 hover:bg-red-900/50 text-red-200 rounded text-xs border border-red-900/50 transition"
+              >
+                <Trash2 size={12} /> Remover Nó
+              </button>
+            )}
+            {selectedLayerId && (
+              <button
+                onClick={() => toggleVisibility(selectedLayerId)}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-neutral-700 hover:bg-neutral-600 rounded text-xs transition"
+              >
+                {!layers.find((l) => l.id === selectedLayerId)?.visible ? (
+                  <EyeOff size={12} />
+                ) : (
+                  <Eye size={12} />
+                )}
+                {!layers.find((l) => l.id === selectedLayerId)?.visible
+                  ? "Ocultar"
+                  : "Visível"}
+              </button>
+            )}
+
+            <div className="h-4 w-px bg-neutral-700 mx-2" />
+
+            <button
+              onClick={() => setShowGraph(!showGraph)}
+              className="p-1.5 hover:bg-neutral-700 rounded text-gray-400 hover:text-white transition"
+              title={showGraph ? "Minimizar Painel" : "Expandir Painel"}
+            >
+              {showGraph ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+            </button>
+          </div>
+        </div>
+
+        {showGraph && (
+          <div className="flex-1 relative bg-[radial-gradient(#333_1px,transparent_1px)] [background-size:16px_16px]">
+            <NodeGraph
+              layers={layers}
+              selectedLayerId={selectedLayerId}
+              onSelectLayer={setSelectedLayerId}
+              onReorderLayers={setLayers}
+            />
+          </div>
+        )}
+      </div>
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        shortcuts={shortcuts}
+        onUpdateShortcut={(action, key) =>
+          setShortcuts((prev) => ({
+            ...prev,
+            [action]: { ...prev[action], key },
+          }))
+        }
+        onResetShortcuts={() => setShortcuts(defaultShortcuts)}
+      />
+
+      {showOriginal && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 bg-red-600 text-white px-4 py-1 rounded-full font-bold shadow-xl z-50 pointer-events-none animate-pulse">
+          VISUALIZANDO ORIGINAL
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default App;
