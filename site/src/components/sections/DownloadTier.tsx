@@ -30,7 +30,12 @@ export function DownloadTier() {
                     <FeatureItem text="Cloud Collaboration" included={false} />
                 </ul>
 
-                <a href="/downloads/Iris-Setup.exe" download className="block w-full text-center bg-white text-black font-bold py-4 rounded-xl hover:bg-gray-200 transition-colors">
+                <a 
+                    href="https://github.com/IsacJunio/iris-color-grade/releases/download/v2.6.1/Iris-Setup.exe" 
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="block w-full text-center bg-white text-black font-bold py-4 rounded-xl hover:bg-gray-200 transition-colors"
+                >
                     Baixar v2.6.1
                 </a>
             </motion.div>
