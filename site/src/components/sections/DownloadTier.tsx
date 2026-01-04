@@ -31,7 +31,7 @@ export function DownloadTier() {
                 </ul>
 
                 <a 
-                    href="https://github.com/IsacJunio/iris-color-grade/releases/download/v2.6.1/Iris-Setup.exe" 
+                    href="https://drive.google.com/uc?export=download&id=1rf0dXQayRfE8Jh5z2-J6x2xMA954Ip0h" 
                     target="_blank"
                     rel="noopener noreferrer"
                     className="block w-full text-center bg-white text-black font-bold py-4 rounded-xl hover:bg-gray-200 transition-colors"
