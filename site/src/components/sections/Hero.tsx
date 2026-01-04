@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion';
 import { Download, ChevronRight } from 'lucide-react';
+import { SecurityDisclaimer } from '../ui/SecurityDisclaimer';
 
 export function Hero() {
 
@@ -74,6 +75,7 @@ export function Hero() {
             Explorar Recursos <ChevronRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
           </a>
         </motion.div>
+        <SecurityDisclaimer />
       </motion.div>
 
       {/* Hero Image Showcase */}
