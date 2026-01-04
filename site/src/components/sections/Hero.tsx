@@ -59,7 +59,7 @@ export function Hero() {
           className="text-sm text-white/30 max-w-lg mx-auto mt-4 font-light leading-relaxed border border-white/5 bg-white/5 rounded-lg p-3 backdrop-blur-sm"
         >
           <strong className="text-white/50 block mb-1">Nota de Segurança:</strong>
-          Software independente 100% seguro. O Windows SmartScreen pode exibir um alerta inicial por não sermos uma grande corporação. Basta clicar em <span className="text-white/60 underline">Mais informações</span> e <span className="text-white/60 underline">Executar</span>.
+          Software independente e 100% seguro. Navegadores e o Windows podem exibir alertas por não sermos uma grande corporação. Se o navegador bloquear, clique em <span className="text-white/60 underline">Manter</span>. No Windows, clique em <span className="text-white/60 underline">Mais informações</span> e <span className="text-white/60 underline">Executar</span>.
         </motion.p>
 
         <motion.div 
