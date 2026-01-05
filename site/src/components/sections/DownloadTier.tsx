@@ -31,7 +31,7 @@ export function DownloadTier() {
                 </ul>
 
                 <a 
-                    href="https://drive.google.com/uc?export=download&id=1rf0dXQayRfE8Jh5z2-J6x2xMA954Ip0h" 
+                    href="https://drive.google.com/file/d/19dkfR5hliN1lrkuGlfZKPTq7BPGk2njs/view?usp=sharing" 
                     target="_blank"
                     rel="noopener noreferrer"
                     className="block w-full text-center bg-white text-black font-bold py-4 rounded-xl hover:bg-gray-200 transition-colors"

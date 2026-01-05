@@ -28,7 +28,7 @@ export function Hero() {
       >
         <motion.div variants={fadeInUp} className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 border border-white/10 text-sm font-medium text-purple-200/80 backdrop-blur-md hover:bg-white/10 transition-colors cursor-default">
           <span className="flex h-2 w-2 rounded-full bg-green-500 box-shadow-green" />
-          <span className="bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">Novo: </span> v2.6.1 Disponível Agora
+          <span className="bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">Novo: </span> v2.7.0 - AI Revolution
         </motion.div>
 
         <motion.h1 
@@ -50,7 +50,7 @@ export function Hero() {
           variants={fadeInUp}
           className="text-xl md:text-2xl text-blue-100/60 max-w-2xl mx-auto leading-relaxed font-light"
         >
-          Eleve suas produções com uma pipeline de processamento baseada em nós.
+          Eleve suas produções com <span className="text-purple-400 font-normal">Inteligência Artificial</span> e processamento nodal.
           <span className="text-white/90 font-normal"> Potência de cinema em tempo real.</span>
         </motion.p>
         
@@ -103,7 +103,7 @@ export function Hero() {
                     <div className="w-3 h-3 rounded-full bg-[#FEBC2E] shadow-sm" />
                     <div className="w-3 h-3 rounded-full bg-[#28C840] shadow-sm" />
                   </div>
-                  <div className="text-xs text-white/20 font-mono tracking-widest uppercase">Iris Pro v2.6.1</div>
+                  <div className="text-xs text-white/20 font-mono tracking-widest uppercase">Iris Pro v2.7.0</div>
                   <div className="w-14" />
               </div>
               

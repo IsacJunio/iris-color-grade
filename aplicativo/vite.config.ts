@@ -8,5 +8,13 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    proxy: {
+        '/api/hf': {
+            target: 'https://api-inference.huggingface.co',
+            changeOrigin: true,
+            rewrite: (path) => path.replace(/^\/api\/hf/, ''),
+            secure: true
+        }
+    }
   }
 })

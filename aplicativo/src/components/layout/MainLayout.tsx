@@ -8,9 +8,11 @@ import { CustomPresetsPanel } from "../panels/CustomPresetsPanel";
 import { ProfessionalMaskPanel } from "../masks/ProfessionalMaskPanel";
 import { NodeGraph } from "../workflow/NodeGraph";
 import { SettingsModal, defaultShortcuts, Shortcuts, ShortcutAction } from "../panels/SettingsModal";
+import { AIPromptModal } from "../panels/AIPromptModal";
+import { AIService, AIProvider } from "../../ai/AIService";
 import { 
   Upload, Settings, Workflow, Layers, Wand2, PanelBottomClose, PanelBottomOpen,
-  Droplet, Activity, Sparkles, ScanLine, MousePointer2, Download, SplitSquareHorizontal
+  Droplet, Activity, Sparkles, ScanLine, MousePointer2, Download, SplitSquareHorizontal, Brain
 } from "lucide-react";
 import ImageCompareSlider from "../ui/ImageCompareSlider";
 import { ColorWheel } from "../color-tools/ColorWheel";
@@ -56,6 +58,8 @@ export function MainLayout() {
   useImageProcessing();
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isAIPromptOpen, setIsAIPromptOpen] = useState(false);
+  const [isGeneratingAI, setIsGeneratingAI] = useState(false);
   const [shortcuts, setShortcuts] = useState<Shortcuts>(defaultShortcuts);
   const [activeColorTab, setActiveColorTab] = useState<"lift" | "gamma" | "gain">("lift");
   const [compareMode, setCompareMode] = useState(false);
@@ -185,6 +189,64 @@ export function MainLayout() {
             }
         }
     });
+  };
+
+  const handleAIGenerate = async (prompt: string) => {
+    const token = localStorage.getItem('ai_token');
+    const provider = localStorage.getItem('ai_provider') as AIProvider || 'gemini';
+
+    if (!token) {
+        alert("Por favor, configure seu Token de API nas configurações (Ícone de Engrenagem -> Inteligência Artificial).");
+        setIsAIPromptOpen(false);
+        setIsSettingsOpen(true);
+        return;
+    }
+
+    setIsGeneratingAI(true);
+    try {
+        const result = await AIService.analyzePrompt(prompt, token, provider);
+        
+        // Create a new Color Layer with the AI settings
+        const newLayer: Layer = {
+            id: crypto.randomUUID(),
+            type: 'cor',
+            name: `AI: ${result.explanation.slice(0, 20)}...`,
+            visible: true,
+            opacity: 1,
+            color: {
+                exposure: 100 + (result.brightness - 100), // Map brightness to exposure loosely
+                brightness: 100,
+                contrast: result.contrast,
+                saturation: result.saturation,
+                temperature: result.temperature,
+                tint: result.tint,
+                hue: 0
+            },
+            colorBalance: {
+                shadows: { r: 0, g: 0, b: 0 },
+                midtones: { r: 0, g: 0, b: 0 },
+                highlights: { r: 0, g: 0, b: 0 }
+            }, 
+            effects: {
+                grain: 0,
+                vignette: result.vignette,
+                blur: 0,
+                sepia: 0,
+                sharpness: 0
+            }
+        };
+
+        const newLayers = [...layers, newLayer];
+        setLayers(newLayers);
+        selectLayer(newLayer.id);
+        setIsAIPromptOpen(false);
+
+    } catch (error) {
+        console.error(error);
+        alert(`Erro ao gerar AI: ${error}`);
+    } finally {
+        setIsGeneratingAI(false);
+    }
   };
 
   return (
@@ -544,6 +606,15 @@ export function MainLayout() {
                {imageSrc && (
                  <>
                     <button
+                        onClick={() => setIsAIPromptOpen(true)}
+                        className="flex items-center gap-2 px-3 py-1.5 bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white rounded-md text-xs font-bold uppercase tracking-wide transition-colors shadow-lg shadow-purple-900/40"
+                        title="AI Auto Grade"
+                    >
+                        <Brain size={14} />
+                        AI Auto
+                    </button>
+
+                    <button
                        onClick={() => setCompareMode(!compareMode)}
                        className={`p-2 rounded transition-colors ${compareMode ? 'bg-orange-500 text-white' : 'hover:bg-neutral-800 text-neutral-400'}`}
                        title="Comparar Antes/Depois"
@@ -767,10 +838,18 @@ export function MainLayout() {
         />
       )}
       
+      {isAIPromptOpen && (
+        <AIPromptModal 
+            isOpen={isAIPromptOpen}
+            onClose={() => setIsAIPromptOpen(false)}
+            onGenerate={handleAIGenerate}
+            isLoading={isGeneratingAI}
+        />
+      )}
+      
       {/* Hidden canvas for image processing (required by ImageContext.loadImage) */}
       <canvas ref={hiddenCanvasRef} style={{ display: 'none' }} />
       
     </div>
   );
 }
-``

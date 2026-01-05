@@ -14,7 +14,7 @@ cd "aplicativo"
 
 ECHO ==========================================
 ECHO      Construindo IRIS (Color Grade Pro)
-ECHO        Versao 2.6.1 - Node Renaming & UX
+ECHO        Versao 2.7.0 - AI Revolution
 ECHO ==========================================
 ECHO.
 ECHO Diretorio: %cd%
@@ -167,7 +167,7 @@ IF "%EXE_FOUND%"=="1" (
     ECHO  [SUCESSO] BUILD CONCLUIDO COM SUCESSO!
     ECHO ==========================================
     ECHO.
-    ECHO  Aplicacao: Iris - Color Grade Pro v2.6.1
+    ECHO  Aplicacao: Iris - Color Grade Pro v2.7.0
     rem Copy installer to site\downloads if exists
     REM Removed copy of portable executable to site\downloads (handled by installer copy)
     rem Copy installer to site/downloads if exists
@@ -220,6 +220,13 @@ IF "%EXE_FOUND%"=="1" (
         CALL :COPY_INSTALLER
     )
     
+    ECHO  === RECURSOS v2.7.0 ===
+    ECHO.
+    ECHO  [REVOLUTION] AI Auto Grade:
+    ECHO    - Integracao com Google Gemini, OpenAI e Hugging Face
+    ECHO    - Geracao automatica de color grading via prompt de texto
+    ECHO    - Modo Offline Inteligente (Fallback Smart) quando sem internet
+    ECHO.
     ECHO  === RECURSOS v2.6.1 ===
     ECHO.
     ECHO  [NOVO] Node Renaming:

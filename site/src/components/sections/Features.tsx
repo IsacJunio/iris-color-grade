@@ -33,8 +33,8 @@ export function Features() {
              <FeatureCard 
               className="md:col-span-1 md:row-span-1"
               icon={<Wand2 className="w-6 h-6 text-purple-400" />}
-              title="Máscaras Neurais"
-              description="IA que entende profundidade e isola objetos instantaneamente."
+              title="IA Auto Grade"
+              description="Descreva o look que você quer e deixe a IA (Gemini/GPT/HF) criar o color grading perfeito em segundos."
               delay={0.2}
             />
 
