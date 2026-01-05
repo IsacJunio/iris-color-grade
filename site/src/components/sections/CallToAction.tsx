@@ -13,10 +13,10 @@ export function CallToAction() {
               className="max-w-4xl mx-auto bg-gradient-to-b from-white/10 to-white/5 border border-white/10 p-12 rounded-3xl backdrop-blur-2xl"
           >
               <h2 className="text-4xl md:text-5xl font-bold mb-6">Pronto para transformar sua arte?</h2>
-              <p className="text-xl text-white/60 mb-10">Baixe o Iris v2.6.1 agora e experimente o futuro do color grading.</p>
+              <p className="text-xl text-white/60 mb-10">Baixe o Iris v2.7.0 agora e experimente o futuro do color grading com IA.</p>
               
               <a 
-                href="https://drive.google.com/uc?export=download&id=1rf0dXQayRfE8Jh5z2-J6x2xMA954Ip0h" 
+                href="https://drive.google.com/uc?export=download&id=19dkfR5hliN1lrkuGlfZKPTq7BPGk2njs" 
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-3 bg-white text-black px-12 py-5 rounded-full text-lg font-bold hover:bg-gray-100 transition-colors shadow-[0_0_50px_rgba(255,255,255,0.2)]"

@@ -69,7 +69,7 @@ export function Hero() {
           <div className="relative group">
               <div className="absolute -inset-1 bg-gradient-to-r from-purple-600 to-indigo-600 rounded-full blur opacity-40 group-hover:opacity-100 transition duration-500"></div>
               <a 
-                href="https://drive.google.com/uc?export=download&id=1rf0dXQayRfE8Jh5z2-J6x2xMA954Ip0h"
+                href="https://drive.google.com/uc?export=download&id=19dkfR5hliN1lrkuGlfZKPTq7BPGk2njs"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="relative flex items-center gap-3 bg-white text-black px-10 py-5 rounded-full text-lg font-bold hover:scale-105 active:scale-95 transition-transform shadow-2xl"
